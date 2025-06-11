@@ -99,7 +99,7 @@ func main() {
 
 	// Create HTTP server with timeouts
 	server := &http.Server{
-		Addr:         fmt.Sprintf(":%s", port),
+		Addr:         fmt.Sprintf("0.0.0.0:%s", port),
 		Handler:      r,
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 30 * time.Second,
@@ -107,7 +107,7 @@ func main() {
 	}
 
 	// Start server
-	addr := fmt.Sprintf(":%s", port)
+	addr := fmt.Sprintf("0.0.0.0:%s", port)
 	log.Printf("Starting server on %s", addr)
 	log.Printf("Server configuration - ReadTimeout: 30s, WriteTimeout: 30s, IdleTimeout: 120s")
 
