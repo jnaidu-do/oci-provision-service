@@ -97,21 +97,8 @@ func main() {
 		port = "5000"
 	}
 
-	// Create HTTP server with timeouts
-	server := &http.Server{
-		Addr:         fmt.Sprintf("127.0.0.1:%s", port), // Force IPv4 binding
-		Handler:      r,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  120 * time.Second,
-	}
-
-	// Start server
-	addr := fmt.Sprintf("127.0.0.1:%s", port)
+	// Start server with simple configuration
+	addr := fmt.Sprintf(":%s", port)
 	log.Printf("Starting server on %s", addr)
-	log.Printf("Server configuration - ReadTimeout: 30s, WriteTimeout: 30s, IdleTimeout: 120s")
-
-	if err := server.ListenAndServe(); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+	log.Fatal(http.ListenAndServe(addr, r))
 }
