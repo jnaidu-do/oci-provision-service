@@ -5,24 +5,62 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/jayanthnaidu/oci-provision-service/pkg/handlers"
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
 )
 
+// loggingMiddleware adds logging for all HTTP requests
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		log.Printf("Incoming request: %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+
+		// Create a custom response writer to capture the status code
+		rw := &responseWriter{
+			ResponseWriter: w,
+			statusCode:     http.StatusOK,
+		}
+
+		next.ServeHTTP(rw, r)
+
+		duration := time.Since(start)
+		log.Printf("Request completed: %s %s - Status: %d - Duration: %v",
+			r.Method, r.URL.Path, rw.statusCode, duration)
+	})
+}
+
+// responseWriter is a custom response writer that captures the status code
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
 func main() {
 	// Initialize OCI client
+	log.Printf("Initializing OCI client")
 	ociClient, err := oci.NewClient()
 	if err != nil {
 		log.Fatalf("Failed to initialize OCI client: %v", err)
 	}
 
 	// Initialize handlers
+	log.Printf("Initializing HTTP handlers")
 	h := handlers.NewHandler(ociClient)
 
 	// Create router
+	log.Printf("Setting up HTTP router")
 	r := mux.NewRouter()
+
+	// Add logging middleware
+	r.Use(loggingMiddleware)
 
 	// API routes
 	api := r.PathPrefix("/api/v1").Subrouter()
@@ -35,10 +73,21 @@ func main() {
 		port = "5000"
 	}
 
+	// Create HTTP server with timeouts
+	server := &http.Server{
+		Addr:         fmt.Sprintf(":%s", port),
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
 	// Start server
 	addr := fmt.Sprintf(":%s", port)
 	log.Printf("Starting server on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
+	log.Printf("Server configuration - ReadTimeout: 30s, WriteTimeout: 30s, IdleTimeout: 120s")
+
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
