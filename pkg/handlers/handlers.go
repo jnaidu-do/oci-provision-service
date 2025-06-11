@@ -94,27 +94,37 @@ func convertPEMToSSHPublicKey(pemKey string) (string, error) {
 
 // ProvisionBareMetal handles the POST /api/v1/provision_baremetal endpoint
 func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received request to provision bare metal instance from %s", r.RemoteAddr)
+
 	var req ProvisionBareMetalRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Error decoding request body: %v", err)
 		sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
 		return
 	}
+	log.Printf("Request details - Compartment: %s, AD: %s, Image: %s, Subnet: %s, DisplayName: %s",
+		req.CompartmentID, req.AvailabilityDomain, req.ImageID, req.SubnetID, req.DisplayName)
 
 	// Validate required fields
 	if req.CompartmentID == "" || req.AvailabilityDomain == "" || req.ImageID == "" ||
 		req.SubnetID == "" || req.PEMPrivateKey == "" || req.DisplayName == "" {
+		log.Printf("Missing required fields in request")
 		sendError(w, http.StatusBadRequest, "Missing required fields")
 		return
 	}
 
 	// Convert PEM key to SSH public key
+	log.Printf("Converting PEM key to SSH public key")
 	sshPublicKey, err := convertPEMToSSHPublicKey(req.PEMPrivateKey)
 	if err != nil {
+		log.Printf("Error converting PEM key: %v", err)
 		sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid PEM key: %v", err))
 		return
 	}
+	log.Printf("Successfully converted PEM key to SSH public key")
 
 	// Create launch instance request
+	log.Printf("Creating launch instance request")
 	launchReq := core.LaunchInstanceRequest{
 		LaunchInstanceDetails: core.LaunchInstanceDetails{
 			CompartmentId:      common.String(req.CompartmentID),
@@ -130,12 +140,14 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Launch the instance
+	log.Printf("Initiating instance launch")
 	instance, err := h.ociClient.LaunchBareMetalInstance(r.Context(), &launchReq)
 	if err != nil {
 		log.Printf("Error launching instance: %v", err)
 		sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to launch instance: %v", err))
 		return
 	}
+	log.Printf("Successfully initiated instance launch. Instance ID: %s, State: %s", *instance.Id, instance.LifecycleState)
 
 	// Send success response
 	w.Header().Set("Content-Type", "application/json")
@@ -145,33 +157,41 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		InstanceID:     *instance.Id,
 		LifecycleState: string(instance.LifecycleState),
 	})
+	log.Printf("Sent success response for instance %s", *instance.Id)
 }
 
 // TrackBareMetal handles the GET /api/v1/track_baremetal endpoint
 func (h *Handler) TrackBareMetal(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Received request to track instance from %s", r.RemoteAddr)
+
 	instanceID := r.URL.Query().Get("instance_id")
 	if instanceID == "" {
+		log.Printf("Missing instance_id in request")
 		sendError(w, http.StatusBadRequest, "Missing instance_id query parameter")
 		return
 	}
+	log.Printf("Tracking instance: %s", instanceID)
 
 	instance, err := h.ociClient.GetInstance(r.Context(), instanceID)
 	if err != nil {
-		log.Printf("Error getting instance: %v", err)
+		log.Printf("Error getting instance %s: %v", instanceID, err)
 		sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to get instance: %v", err))
 		return
 	}
 
 	if instance == nil {
+		log.Printf("Instance %s not found", instanceID)
 		sendError(w, http.StatusNotFound, fmt.Sprintf("Instance with ID '%s' not found", instanceID))
 		return
 	}
 
+	log.Printf("Found instance %s with state: %s", instanceID, instance.LifecycleState)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(TrackBareMetalResponse{
 		InstanceID:     *instance.Id,
 		LifecycleState: string(instance.LifecycleState),
 	})
+	log.Printf("Sent response for instance %s", instanceID)
 }
 
 // sendError sends an error response with the given status code and message
