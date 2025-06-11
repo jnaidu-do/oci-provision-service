@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,25 @@ import (
 	"github.com/jayanthnaidu/oci-provision-service/pkg/handlers"
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
 )
+
+// HealthResponse represents the health check response
+type HealthResponse struct {
+	Status    string    `json:"status"`
+	Timestamp time.Time `json:"timestamp"`
+	Version   string    `json:"version"`
+}
+
+// healthCheckHandler handles the health check endpoint
+func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	response := HealthResponse{
+		Status:    "healthy",
+		Timestamp: time.Now(),
+		Version:   "1.0.0",
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
 
 // loggingMiddleware adds logging for all HTTP requests
 func loggingMiddleware(next http.Handler) http.Handler {
@@ -61,6 +81,10 @@ func main() {
 
 	// Add logging middleware
 	r.Use(loggingMiddleware)
+
+	// Health check endpoint
+	r.HandleFunc("/health", healthCheckHandler).Methods(http.MethodGet)
+	log.Printf("Added health check endpoint at /health")
 
 	// API routes
 	api := r.PathPrefix("/api/v1").Subrouter()
