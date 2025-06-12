@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
@@ -103,6 +105,15 @@ func convertPEMToSSHPublicKey(pemKey string) (string, error) {
 	return string(ssh.MarshalAuthorizedKey(publicKey)), nil
 }
 
+// generateRandomSuffix generates a random 8-character hex string
+func generateRandomSuffix() (string, error) {
+	bytes := make([]byte, 4)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(bytes), nil
+}
+
 // ProvisionBareMetal handles the POST /api/v1/provision_baremetal endpoint
 func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Received provision request from %s", r.RemoteAddr)
@@ -154,8 +165,17 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		go func(instanceNum int) {
 			defer wg.Done()
 
-			// Generate unique display name
-			config.DisplayName = fmt.Sprintf("baremetal-instance-%d", instanceNum+1)
+			// Generate random suffix
+			randomSuffix, err := generateRandomSuffix()
+			if err != nil {
+				log.Printf("Error generating random suffix: %v", err)
+				errorChan <- err
+				return
+			}
+
+			// Generate unique display name with random suffix
+			config.DisplayName = fmt.Sprintf("baremetal-instance-%d-%s", instanceNum+1, randomSuffix)
+			log.Printf("Generated display name: %s", config.DisplayName)
 
 			// Launch instance
 			instance, err := h.ociClient.LaunchBareMetalInstance(config)
