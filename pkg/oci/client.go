@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	BareMetalShape = "BM.Standard.A1.160"
+	BareMetalShape = "BM.Optimized3.36"
 )
 
 // InstanceConfig holds the configuration for launching an instance
