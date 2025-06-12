@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
+	"github.com/oracle/oci-go-sdk/v65/common/auth"
 	"github.com/oracle/oci-go-sdk/v65/core"
 	"golang.org/x/crypto/ssh"
 )
@@ -45,38 +46,39 @@ type Client struct {
 func NewClient() (*Client, error) {
 	log.Printf("Initializing OCI client")
 
+	var configProvider common.ConfigurationProvider
+	var err error
+
 	// Check if we're in local development mode
 	if os.Getenv("OCI_LOCAL_DEV") == "true" {
 		log.Printf("Using local development configuration")
-		configProvider := common.DefaultConfigProvider()
-		computeClient, err := core.NewComputeClientWithConfigurationProvider(configProvider)
+		configProvider = common.DefaultConfigProvider()
+	} else {
+		log.Printf("Using instance principals authentication")
+		configProvider, err = auth.InstancePrincipalConfigurationProvider()
 		if err != nil {
-			return nil, fmt.Errorf("failed to create compute client: %v", err)
+			log.Printf("Failed to create instance principal provider: %v", err)
+			return nil, fmt.Errorf("failed to create instance principal provider: %v", err)
 		}
-
-		vcnClient, err := core.NewVirtualNetworkClientWithConfigurationProvider(configProvider)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create VCN client: %v", err)
-		}
-
-		return &Client{
-			computeClient: computeClient,
-			vcnClient:     vcnClient,
-		}, nil
 	}
 
-	// Production configuration
-	configProvider := common.DefaultConfigProvider()
+	// Create compute client
+	log.Printf("Creating compute client")
 	computeClient, err := core.NewComputeClientWithConfigurationProvider(configProvider)
 	if err != nil {
+		log.Printf("Failed to create compute client: %v", err)
 		return nil, fmt.Errorf("failed to create compute client: %v", err)
 	}
 
+	// Create VCN client
+	log.Printf("Creating VCN client")
 	vcnClient, err := core.NewVirtualNetworkClientWithConfigurationProvider(configProvider)
 	if err != nil {
+		log.Printf("Failed to create VCN client: %v", err)
 		return nil, fmt.Errorf("failed to create VCN client: %v", err)
 	}
 
+	log.Printf("OCI client initialized successfully")
 	return &Client{
 		computeClient: computeClient,
 		vcnClient:     vcnClient,
@@ -104,6 +106,10 @@ func (c *Client) LaunchBareMetalInstance(config InstanceConfig) (*Instance, erro
 			Shape:              common.String(BareMetalShape),
 			Metadata: map[string]string{
 				"ssh_authorized_keys": sshPublicKey,
+			},
+			CreateVnicDetails: &core.CreateVnicDetails{
+				AssignPublicIp: common.Bool(false), // Disable public IP assignment
+				SubnetId:       common.String(config.SubnetID),
 			},
 		},
 	}
@@ -144,7 +150,7 @@ func (c *Client) LaunchBareMetalInstance(config InstanceConfig) (*Instance, erro
 		DisplayName:    *response.Instance.DisplayName,
 	}
 
-	log.Printf("Successfully launched instance %s", instance.ID)
+	log.Printf("Successfully launched instance %s with private IP %s", instance.ID, instance.PrivateIP)
 	return instance, nil
 }
 
