@@ -187,13 +187,13 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Operation != "provision" {
-		http.Error(w, "Only provision operation is supported", http.StatusBadRequest)
+	if req.NumHypervisors <= 0 {
+		http.Error(w, "Number of hypervisors must be greater than 0", http.StatusBadRequest)
 		return
 	}
 
-	if req.NumHypervisors <= 0 {
-		http.Error(w, "Number of hypervisors must be greater than 0", http.StatusBadRequest)
+	if req.NumHypervisors > 3 {
+		http.Error(w, "Number of hypervisors must be lesser than 3", http.StatusBadRequest)
 		return
 	}
 
