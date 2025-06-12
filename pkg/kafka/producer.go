@@ -33,9 +33,18 @@ func NewProducer(brokerAddr, topic string) (*Producer, error) {
 	config.Producer.Return.Successes = true
 	config.Producer.Timeout = 5 * time.Second
 
-	log.Printf("Connecting to Kafka broker: %s", brokerAddr)
-	producer, err := sarama.NewSyncProducer([]string{brokerAddr}, config)
+	// Add version configuration
+	config.Version = sarama.V2_8_1_0
+	log.Printf("Using Kafka version: %s", config.Version)
+
+	// Add broker configuration
+	brokers := []string{brokerAddr}
+	log.Printf("Attempting to connect to Kafka brokers: %v", brokers)
+
+	// Create producer with timeout
+	producer, err := sarama.NewSyncProducer(brokers, config)
 	if err != nil {
+		log.Printf("Failed to create Kafka producer: %v", err)
 		return nil, fmt.Errorf("failed to create Kafka producer: %v", err)
 	}
 

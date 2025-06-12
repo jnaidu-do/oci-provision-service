@@ -44,18 +44,40 @@ func NewHandler(ociClient *oci.Client) (*Handler, error) {
 		topic = "filteredEvents" // default topic
 	}
 
-	log.Printf("Creating Kafka producer with broker: %s and topic: %s", brokerAddr, topic)
-	producer, err := kafka.NewProducer(brokerAddr, topic)
-	if err != nil {
-		log.Printf("Failed to create Kafka producer: %v", err)
-		return nil, fmt.Errorf("failed to create Kafka producer: %v", err)
-	}
-	log.Printf("Kafka producer initialized successfully")
+	// Create a channel for the producer result
+	producerChan := make(chan *kafka.Producer, 1)
+	errChan := make(chan error, 1)
 
-	return &Handler{
-		ociClient: ociClient,
-		producer:  producer,
-	}, nil
+	// Start Kafka producer initialization in a goroutine
+	go func() {
+		log.Printf("Creating Kafka producer with broker: %s and topic: %s", brokerAddr, topic)
+		producer, err := kafka.NewProducer(brokerAddr, topic)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		producerChan <- producer
+	}()
+
+	// Wait for either the producer or an error with a timeout
+	select {
+	case producer := <-producerChan:
+		log.Printf("Kafka producer initialized successfully")
+		return &Handler{
+			ociClient: ociClient,
+			producer:  producer,
+		}, nil
+	case err := <-errChan:
+		log.Printf("Warning: Failed to initialize Kafka producer: %v. Continuing without Kafka...", err)
+		return &Handler{
+			ociClient: ociClient,
+		}, nil
+	case <-time.After(10 * time.Second):
+		log.Printf("Warning: Timeout while initializing Kafka producer. Continuing without Kafka...")
+		return &Handler{
+			ociClient: ociClient,
+		}, nil
+	}
 }
 
 // ProvisionRequest represents the new request format
@@ -250,19 +272,23 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 								instance.DisplayName, instance.PrivateIP)
 
 							// Send Kafka message
-							msg := kafka.EventMessage{
-								InstanceID:  instance.ID,
-								PrivateIP:   instance.PrivateIP,
-								DisplayName: instance.DisplayName,
-								Token:       req.Token,
-								Timestamp:   time.Now(),
-							}
+							if h.producer != nil {
+								msg := kafka.EventMessage{
+									InstanceID:  instance.ID,
+									PrivateIP:   instance.PrivateIP,
+									DisplayName: instance.DisplayName,
+									Token:       req.Token,
+									Timestamp:   time.Now(),
+								}
 
-							if err := h.producer.SendEvent(msg); err != nil {
-								log.Printf("Error sending Kafka message for instance %s: %v",
-									instance.DisplayName, err)
+								if err := h.producer.SendEvent(msg); err != nil {
+									log.Printf("Error sending Kafka message for instance %s: %v",
+										instance.DisplayName, err)
+								} else {
+									log.Printf("Sent Kafka message for instance %s", instance.DisplayName)
+								}
 							} else {
-								log.Printf("Sent Kafka message for instance %s", instance.DisplayName)
+								log.Printf("Kafka producer not available, skipping message for instance %s", instance.DisplayName)
 							}
 							return
 						case "TERMINATED", "TERMINATING":
