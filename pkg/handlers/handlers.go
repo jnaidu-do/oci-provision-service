@@ -86,7 +86,7 @@ type ProvisionRequest struct {
 	Operation      string `json:"operation"`
 	Region         string `json:"region"`
 	NumHypervisors int    `json:"num_hypervisors"`
-	RegionID       string `json:"regionId"`
+	RegionID       int    `json:"regionId"`
 	Token          string `json:"token"`
 }
 
