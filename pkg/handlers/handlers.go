@@ -40,10 +40,8 @@ type ProvisionRequest struct {
 
 // ProvisionResponse represents the response format
 type ProvisionResponse struct {
-	Status               string `json:"status"`
-	InstanceTasksStarted int    `json:"instance_tasks_started"`
-	Message              string `json:"message"`
-	InstanceID           string `json:"instance_id"`
+	Message    string `json:"message"`
+	InstanceID string `json:"instance_id"`
 }
 
 // ProvisionedInstanceDetails represents the details of a provisioned instance
