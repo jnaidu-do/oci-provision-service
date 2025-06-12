@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -20,14 +23,13 @@ type HealthResponse struct {
 	Version   string    `json:"version"`
 }
 
-// healthCheckHandler handles the health check endpoint
+// healthCheckHandler handles health check requests
 func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	response := HealthResponse{
 		Status:    "healthy",
 		Timestamp: time.Now(),
 		Version:   "1.0.0",
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -64,7 +66,10 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 func main() {
+	log.Println("Starting application...")
+
 	// Load environment variables
+	log.Println("Loading environment variables...")
 	if err := godotenv.Load(); err != nil {
 		log.Printf("Warning: .env file not found")
 	}
@@ -80,7 +85,7 @@ func main() {
 	log.Printf("Initializing HTTP handlers")
 	h, err := handlers.NewHandler(ociClient)
 	if err != nil {
-		log.Fatalf("Failed to initialize handler: %v", err)
+		log.Fatalf("Failed to initialize handlers: %v", err)
 	}
 
 	// Create router
@@ -88,27 +93,51 @@ func main() {
 	r := mux.NewRouter()
 
 	// Add logging middleware
+	log.Printf("Adding logging middleware")
 	r.Use(loggingMiddleware)
 
 	// Health check endpoint
+	log.Printf("Setting up health check endpoint")
 	r.HandleFunc("/health", healthCheckHandler).Methods(http.MethodGet)
-	log.Printf("Added health check endpoint")
 
-	// Provision bare metal endpoint
-	r.HandleFunc("/api/v1/provision_baremetal", h.ProvisionBareMetal).Methods(http.MethodPost)
-	log.Printf("Added provision bare metal endpoint")
+	// API endpoints
+	log.Printf("Setting up API endpoints")
+	r.HandleFunc("/api/v1/provision-baremetal", h.ProvisionBareMetal).Methods(http.MethodPost)
+	r.HandleFunc("/api/v1/track-baremetal", h.TrackBareMetal).Methods(http.MethodGet)
 
-	// Track bare metal endpoint
-	r.HandleFunc("/api/v1/track_baremetal", h.TrackBareMetal).Methods(http.MethodGet)
-	log.Printf("Added track bare metal endpoint")
-
-	// Start server
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "5000"
+	// Create server
+	log.Printf("Creating HTTP server")
+	srv := &http.Server{
+		Addr:         ":5000",
+		Handler:      r,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
 	}
-	log.Printf("Starting server on port %s", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
+
+	// Start server in a goroutine
+	log.Printf("Starting server on port 5000...")
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start server: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	log.Printf("Waiting for interrupt signal...")
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	// Create shutdown context with timeout
+	log.Printf("Shutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Attempt graceful shutdown
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
 	}
+
+	log.Printf("Server exited properly")
 }
