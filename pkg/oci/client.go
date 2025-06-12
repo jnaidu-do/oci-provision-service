@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/oracle/oci-go-sdk/v65/common"
 	"github.com/oracle/oci-go-sdk/v65/common/auth"
@@ -121,17 +122,35 @@ func (c *Client) LaunchBareMetalInstance(config InstanceConfig) (*Instance, erro
 		return nil, fmt.Errorf("failed to launch instance: %v", err)
 	}
 
-	// Get the VNIC attachment to get the private IP
-	vnicAttachments, err := c.computeClient.ListVnicAttachments(ctx, core.ListVnicAttachmentsRequest{
-		CompartmentId: common.String(config.CompartmentID),
-		InstanceId:    response.Instance.Id,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get VNIC attachments: %v", err)
+	// Wait for VNIC attachment with retries
+	var vnicAttachments core.ListVnicAttachmentsResponse
+	maxRetries := 5
+	retryDelay := 5 * time.Second
+
+	for i := 0; i < maxRetries; i++ {
+		log.Printf("Waiting for VNIC attachment (attempt %d/%d)...", i+1, maxRetries)
+		vnicAttachments, err = c.computeClient.ListVnicAttachments(ctx, core.ListVnicAttachmentsRequest{
+			CompartmentId: common.String(config.CompartmentID),
+			InstanceId:    response.Instance.Id,
+		})
+		if err != nil {
+			log.Printf("Error getting VNIC attachments (attempt %d): %v", i+1, err)
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		if len(vnicAttachments.Items) > 0 {
+			break
+		}
+
+		if i < maxRetries-1 {
+			log.Printf("No VNIC attachments found, retrying in %v...", retryDelay)
+			time.Sleep(retryDelay)
+		}
 	}
 
 	if len(vnicAttachments.Items) == 0 {
-		return nil, fmt.Errorf("no VNIC attachments found for instance")
+		return nil, fmt.Errorf("no VNIC attachments found for instance after %d retries", maxRetries)
 	}
 
 	// Get the VNIC details
