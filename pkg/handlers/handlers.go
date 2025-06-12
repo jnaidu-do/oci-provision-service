@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
@@ -8,10 +9,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
-	"github.com/oracle/oci-go-sdk/v65/common"
-	"github.com/oracle/oci-go-sdk/v65/core"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -27,28 +29,37 @@ func NewHandler(ociClient *oci.Client) *Handler {
 	}
 }
 
-// ProvisionBareMetalRequest represents the request body for provisioning a bare metal instance
-type ProvisionBareMetalRequest struct {
-	CompartmentID       string `json:"compartment_id"`
-	AvailabilityDomain  string `json:"availability_domain"`
-	ImageID             string `json:"image_id"`
-	SubnetID            string `json:"subnet_id"`
-	PEMPrivateKey       string `json:"pem_private_key"`
-	DisplayName         string `json:"display_name"`
-	BootVolumeSizeInGBs *int   `json:"boot_volume_size_in_gbs,omitempty"`
+// ProvisionRequest represents the new request format
+type ProvisionRequest struct {
+	CloudProvider  string `json:"cloudProvider"`
+	Operation      string `json:"operation"`
+	Region         string `json:"region"`
+	NumHypervisors int    `json:"num_hypervisors"`
+	RegionID       string `json:"regionId"`
 }
 
-// ProvisionBareMetalResponse represents the response for provisioning a bare metal instance
-type ProvisionBareMetalResponse struct {
-	Status         string `json:"status"`
-	InstanceID     string `json:"instance_id"`
-	LifecycleState string `json:"lifecycle_state"`
+// ProvisionResponse represents the response format
+type ProvisionResponse struct {
+	Status               string `json:"status"`
+	InstanceTasksStarted int    `json:"instance_tasks_started"`
 }
 
-// TrackBareMetalResponse represents the response for tracking a bare metal instance
-type TrackBareMetalResponse struct {
+// ProvisionedInstanceDetails represents the details of a provisioned instance
+type ProvisionedInstanceDetails struct {
 	InstanceID     string `json:"instance_id"`
+	PrivateIP      string `json:"private_ip"`
 	LifecycleState string `json:"lifecycle_state"`
+	DisplayName    string `json:"display_name"`
+}
+
+// ProvisioningEvent represents the event logged when an instance is running
+type ProvisioningEvent struct {
+	CloudProvider              string                     `json:"cloudProvider"`
+	Operation                  string                     `json:"operation"`
+	Region                     string                     `json:"region"`
+	NumHypervisors             int                        `json:"num_hypervisors"`
+	RegionID                   string                     `json:"regionId"`
+	ProvisionedInstanceDetails ProvisionedInstanceDetails `json:"provisioned_instance_details"`
 }
 
 // ErrorResponse represents an error response
@@ -94,70 +105,137 @@ func convertPEMToSSHPublicKey(pemKey string) (string, error) {
 
 // ProvisionBareMetal handles the POST /api/v1/provision_baremetal endpoint
 func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
-	log.Printf("Received request to provision bare metal instance from %s", r.RemoteAddr)
+	log.Printf("Received provision request from %s", r.RemoteAddr)
 
-	var req ProvisionBareMetalRequest
+	var req ProvisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("Error decoding request body: %v", err)
-		sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid request body: %v", err))
+		log.Printf("Error decoding request: %v", err)
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	log.Printf("Request details - Compartment: %s, AD: %s, Image: %s, Subnet: %s, DisplayName: %s",
-		req.CompartmentID, req.AvailabilityDomain, req.ImageID, req.SubnetID, req.DisplayName)
 
 	// Validate required fields
-	if req.CompartmentID == "" || req.AvailabilityDomain == "" || req.ImageID == "" ||
-		req.SubnetID == "" || req.PEMPrivateKey == "" || req.DisplayName == "" {
+	if req.CloudProvider == "" || req.Operation == "" || req.Region == "" || req.RegionID == "" {
 		log.Printf("Missing required fields in request")
-		sendError(w, http.StatusBadRequest, "Missing required fields")
+		http.Error(w, "Missing required fields", http.StatusBadRequest)
 		return
 	}
 
-	// Convert PEM key to SSH public key
-	log.Printf("Converting PEM key to SSH public key")
-	sshPublicKey, err := convertPEMToSSHPublicKey(req.PEMPrivateKey)
-	if err != nil {
-		log.Printf("Error converting PEM key: %v", err)
-		sendError(w, http.StatusBadRequest, fmt.Sprintf("Invalid PEM key: %v", err))
+	if req.NumHypervisors <= 0 {
+		log.Printf("Invalid num_hypervisors value: %d", req.NumHypervisors)
+		http.Error(w, "num_hypervisors must be greater than 0", http.StatusBadRequest)
 		return
 	}
-	log.Printf("Successfully converted PEM key to SSH public key")
 
-	// Create launch instance request
-	log.Printf("Creating launch instance request")
-	launchReq := core.LaunchInstanceRequest{
-		LaunchInstanceDetails: core.LaunchInstanceDetails{
-			CompartmentId:      common.String(req.CompartmentID),
-			AvailabilityDomain: common.String(req.AvailabilityDomain),
-			ImageId:            common.String(req.ImageID),
-			SubnetId:           common.String(req.SubnetID),
-			DisplayName:        common.String(req.DisplayName),
-			Shape:              common.String(oci.BareMetalShape),
-			Metadata: map[string]string{
-				"ssh_authorized_keys": sshPublicKey,
-			},
-		},
+	// Get OCI configuration from environment
+	config := oci.InstanceConfig{
+		CompartmentID:      os.Getenv("OCI_COMPARTMENT_ID"),
+		AvailabilityDomain: os.Getenv("OCI_AVAILABILITY_DOMAIN"),
+		ImageID:            os.Getenv("OCI_IMAGE_ID"),
+		SubnetID:           os.Getenv("OCI_SUBNET_ID"),
+		PEMPrivateKey:      os.Getenv("OCI_PEM_PRIVATE_KEY"),
 	}
 
-	// Launch the instance
-	log.Printf("Initiating instance launch")
-	instance, err := h.ociClient.LaunchBareMetalInstance(r.Context(), &launchReq)
-	if err != nil {
-		log.Printf("Error launching instance: %v", err)
-		sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to launch instance: %v", err))
+	// Validate OCI configuration
+	if config.CompartmentID == "" || config.AvailabilityDomain == "" ||
+		config.ImageID == "" || config.SubnetID == "" || config.PEMPrivateKey == "" {
+		log.Printf("Missing OCI configuration")
+		http.Error(w, "Server configuration error", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("Successfully initiated instance launch. Instance ID: %s, State: %s", *instance.Id, instance.LifecycleState)
+
+	// Create a wait group to track all provisioning tasks
+	var wg sync.WaitGroup
+	errorChan := make(chan error, req.NumHypervisors)
+
+	// Launch instances concurrently
+	for i := 0; i < req.NumHypervisors; i++ {
+		wg.Add(1)
+		go func(instanceNum int) {
+			defer wg.Done()
+
+			// Generate unique display name
+			config.DisplayName = fmt.Sprintf("baremetal-instance-%d", instanceNum+1)
+
+			// Launch instance
+			instance, err := h.ociClient.LaunchBareMetalInstance(config)
+			if err != nil {
+				log.Printf("Error launching instance %s: %v", config.DisplayName, err)
+				errorChan <- err
+				return
+			}
+
+			// Start background polling
+			go h.pollInstanceStatus(r.Context(), instance.ID, req, config.DisplayName)
+		}(i)
+	}
+
+	// Wait for all launch operations to complete
+	wg.Wait()
+	close(errorChan)
+
+	// Check if any errors occurred
+	for err := range errorChan {
+		if err != nil {
+			log.Printf("Error during batch provisioning: %v", err)
+			http.Error(w, "Failed to provision instances", http.StatusInternalServerError)
+			return
+		}
+	}
 
 	// Send success response
+	response := ProvisionResponse{
+		Status:               fmt.Sprintf("Initiated provisioning for %d bare metal instance(s)", req.NumHypervisors),
+		InstanceTasksStarted: req.NumHypervisors,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	json.NewEncoder(w).Encode(ProvisionBareMetalResponse{
-		Status:         "Bare metal instance provisioning initiated",
-		InstanceID:     *instance.Id,
-		LifecycleState: string(instance.LifecycleState),
-	})
-	log.Printf("Sent success response for instance %s", *instance.Id)
+	json.NewEncoder(w).Encode(response)
+}
+
+// pollInstanceStatus polls the instance status and logs when running
+func (h *Handler) pollInstanceStatus(ctx context.Context, instanceID string, req ProvisionRequest, displayName string) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Context cancelled for instance %s", instanceID)
+			return
+		case <-ticker.C:
+			instance, err := h.ociClient.GetInstance(instanceID)
+			if err != nil {
+				log.Printf("Error getting instance %s status: %v", instanceID, err)
+				continue
+			}
+
+			if instance.LifecycleState == "RUNNING" {
+				// Create event
+				event := ProvisioningEvent{
+					CloudProvider:  req.CloudProvider,
+					Operation:      req.Operation,
+					Region:         req.Region,
+					NumHypervisors: req.NumHypervisors,
+					RegionID:       req.RegionID,
+					ProvisionedInstanceDetails: ProvisionedInstanceDetails{
+						InstanceID:     instanceID,
+						PrivateIP:      instance.PrivateIP,
+						LifecycleState: instance.LifecycleState,
+						DisplayName:    displayName,
+					},
+				}
+
+				// Log the event
+				eventJSON, _ := json.Marshal(event)
+				log.Printf("Instance %s is now running: %s", instanceID, string(eventJSON))
+				return
+			}
+
+			log.Printf("Instance %s status: %s", instanceID, instance.LifecycleState)
+		}
+	}
 }
 
 // TrackBareMetal handles the GET /api/v1/track_baremetal endpoint
@@ -172,7 +250,7 @@ func (h *Handler) TrackBareMetal(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("Tracking instance: %s", instanceID)
 
-	instance, err := h.ociClient.GetInstance(r.Context(), instanceID)
+	instance, err := h.ociClient.GetInstance(instanceID)
 	if err != nil {
 		log.Printf("Error getting instance %s: %v", instanceID, err)
 		sendError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to get instance: %v", err))
@@ -187,9 +265,10 @@ func (h *Handler) TrackBareMetal(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Found instance %s with state: %s", instanceID, instance.LifecycleState)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(TrackBareMetalResponse{
-		InstanceID:     *instance.Id,
-		LifecycleState: string(instance.LifecycleState),
+	json.NewEncoder(w).Encode(ProvisionedInstanceDetails{
+		InstanceID:     instance.ID,
+		PrivateIP:      instance.PrivateIP,
+		LifecycleState: instance.LifecycleState,
 	})
 	log.Printf("Sent response for instance %s", instanceID)
 }

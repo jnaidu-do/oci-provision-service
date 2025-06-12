@@ -11,6 +11,7 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/jayanthnaidu/oci-provision-service/pkg/handlers"
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
+	"github.com/joho/godotenv"
 )
 
 // HealthResponse represents the health check response
@@ -64,6 +65,11 @@ func (rw *responseWriter) WriteHeader(code int) {
 }
 
 func main() {
+	// Load environment variables
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: .env file not found")
+	}
+
 	// Initialize OCI client
 	log.Printf("Initializing OCI client")
 	ociClient, err := oci.NewClient()
@@ -84,21 +90,23 @@ func main() {
 
 	// Health check endpoint
 	r.HandleFunc("/health", healthCheckHandler).Methods(http.MethodGet)
-	log.Printf("Added health check endpoint at /health")
+	log.Printf("Registered health check endpoint at /health")
 
-	// API routes
-	api := r.PathPrefix("/api/v1").Subrouter()
-	api.HandleFunc("/provision_baremetal", h.ProvisionBareMetal).Methods(http.MethodPost)
-	api.HandleFunc("/track_baremetal", h.TrackBareMetal).Methods(http.MethodGet)
+	// API v1 endpoints
+	v1 := r.PathPrefix("/api/v1").Subrouter()
+	v1.HandleFunc("/provision-baremetal", h.ProvisionBareMetal).Methods(http.MethodPost)
+	v1.HandleFunc("/track-baremetal", h.TrackBareMetal).Methods(http.MethodGet)
+	log.Printf("Registered API v1 endpoints")
 
-	// Get port from environment variable or use default
+	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5000"
 	}
-
-	// Start server with simple configuration
 	addr := fmt.Sprintf(":%s", port)
+
 	log.Printf("Starting server on %s", addr)
-	log.Fatal(http.ListenAndServe(addr, r))
+	if err := http.ListenAndServe(addr, r); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
+	}
 }
