@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
@@ -35,7 +36,7 @@ type ProvisionRequest struct {
 	CloudProvider  string `json:"cloudProvider"`
 	Operation      string `json:"operation"`
 	Region         string `json:"region"`
-	NumHypervisors int    `json:"num_hypervisors"`
+	NumHypervisors string `json:"num_hypervisors"`
 	RegionID       int    `json:"regionId"`
 	Token          string `json:"token"`
 }
@@ -139,23 +140,29 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.NumHypervisors <= 0 {
+	numHypervisors, err := strconv.Atoi(req.NumHypervisors)
+	if err != nil {
+		http.Error(w, "Invalid number of hypervisors", http.StatusBadRequest)
+		return
+	}
+
+	if numHypervisors <= 0 {
 		http.Error(w, "Number of hypervisors must be greater than 0", http.StatusBadRequest)
 		return
 	}
 
-	if req.NumHypervisors >= 3 {
+	if numHypervisors >= 3 {
 		http.Error(w, "Number of hypervisors must be lesser than 3", http.StatusBadRequest)
 		return
 	}
 
 	// Create a slice to store instance information
-	instances := make([]InstanceInfo, 0, req.NumHypervisors)
-	errorChan := make(chan error, req.NumHypervisors)
+	instances := make([]InstanceInfo, 0, numHypervisors)
+	errorChan := make(chan error, numHypervisors)
 	var wg sync.WaitGroup
 
 	// Launch instances concurrently
-	for i := 0; i < req.NumHypervisors; i++ {
+	for i := 0; i < numHypervisors; i++ {
 		wg.Add(1)
 		go func(instanceNum int) {
 			defer wg.Done()
@@ -208,7 +215,7 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 
 	// Return the instance information immediately
 	response := ProvisionResponse{
-		Message:   fmt.Sprintf("Provisioning initiated for %d instance(s)", req.NumHypervisors),
+		Message:   fmt.Sprintf("Provisioning initiated for %d instance(s)", numHypervisors),
 		Instances: instances,
 	}
 
