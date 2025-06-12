@@ -182,7 +182,7 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate request
-	if req.CloudProvider != "oci" {
+	if req.CloudProvider != "oracle" {
 		http.Error(w, "Only OCI cloud provider is supported", http.StatusBadRequest)
 		return
 	}
