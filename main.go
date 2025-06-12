@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -79,7 +78,10 @@ func main() {
 
 	// Initialize handlers
 	log.Printf("Initializing HTTP handlers")
-	h := handlers.NewHandler(ociClient)
+	h, err := handlers.NewHandler(ociClient)
+	if err != nil {
+		log.Fatalf("Failed to initialize handler: %v", err)
+	}
 
 	// Create router
 	log.Printf("Setting up HTTP router")
@@ -90,23 +92,23 @@ func main() {
 
 	// Health check endpoint
 	r.HandleFunc("/health", healthCheckHandler).Methods(http.MethodGet)
-	log.Printf("Registered health check endpoint at /health")
+	log.Printf("Added health check endpoint")
 
-	// API v1 endpoints
-	v1 := r.PathPrefix("/api/v1").Subrouter()
-	v1.HandleFunc("/provision-baremetal", h.ProvisionBareMetal).Methods(http.MethodPost)
-	v1.HandleFunc("/track-baremetal", h.TrackBareMetal).Methods(http.MethodGet)
-	log.Printf("Registered API v1 endpoints")
+	// Provision bare metal endpoint
+	r.HandleFunc("/api/v1/provision_baremetal", h.ProvisionBareMetal).Methods(http.MethodPost)
+	log.Printf("Added provision bare metal endpoint")
+
+	// Track bare metal endpoint
+	r.HandleFunc("/api/v1/track_baremetal", h.TrackBareMetal).Methods(http.MethodGet)
+	log.Printf("Added track bare metal endpoint")
 
 	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "5000"
 	}
-	addr := fmt.Sprintf(":%s", port)
-
-	log.Printf("Starting server on %s", addr)
-	if err := http.ListenAndServe(addr, r); err != nil {
+	log.Printf("Starting server on port %s", port)
+	if err := http.ListenAndServe(":"+port, r); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }

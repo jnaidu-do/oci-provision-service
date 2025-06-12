@@ -11,9 +11,11 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
+	"github.com/jayanthnaidu/oci-provision-service/pkg/kafka"
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
 	"golang.org/x/crypto/ssh"
 )
@@ -21,13 +23,21 @@ import (
 // Handler represents the HTTP handlers for the API
 type Handler struct {
 	ociClient *oci.Client
+	kafkaProd *kafka.Producer
 }
 
 // NewHandler creates a new handler instance
-func NewHandler(ociClient *oci.Client) *Handler {
+func NewHandler(ociClient *oci.Client) (*Handler, error) {
+	// Initialize Kafka producer
+	producer, err := kafka.NewProducer("10.40.185.73:9092", "filteredEvents")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Kafka producer: %v", err)
+	}
+
 	return &Handler{
 		ociClient: ociClient,
-	}
+		kafkaProd: producer,
+	}, nil
 }
 
 // ProvisionRequest represents the new request format
@@ -37,6 +47,7 @@ type ProvisionRequest struct {
 	Region         string `json:"region"`
 	NumHypervisors int    `json:"num_hypervisors"`
 	RegionID       string `json:"regionId"`
+	Token          string `json:"token"`
 }
 
 // InstanceInfo represents information about a provisioned instance
@@ -219,6 +230,25 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 						case "RUNNING":
 							log.Printf("Baremetal instance %s is now running with private IP %s",
 								instance.DisplayName, instance.PrivateIP)
+
+							// Send Kafka message
+							regionID, _ := strconv.Atoi(req.RegionID)
+							msg := kafka.EventMessage{
+								HostIP:         instance.PrivateIP,
+								Region:         req.Region,
+								NumHypervisors: strconv.Itoa(req.NumHypervisors),
+								RegionID:       regionID,
+								Token:          req.Token,
+								CloudProvider:  "oracle",
+								Operation:      "setup_hypervisor",
+							}
+
+							if err := h.kafkaProd.SendEvent(msg); err != nil {
+								log.Printf("Error sending Kafka message for instance %s: %v",
+									instance.DisplayName, err)
+							} else {
+								log.Printf("Sent Kafka message for instance %s", instance.DisplayName)
+							}
 							return
 						case "TERMINATED", "TERMINATING":
 							log.Printf("Baremetal instance %s was terminated", instance.DisplayName)
