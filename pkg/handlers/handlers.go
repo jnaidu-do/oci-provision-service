@@ -170,8 +170,19 @@ func generateRandomSuffix() (string, error) {
 	return hex.EncodeToString(bytes), nil
 }
 
-// ProvisionBareMetal handles the POST /api/v1/provision_baremetal endpoint
+// ProvisionBareMetal handles the POST /api/v1/provision-baremetal endpoint
 func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
+	// Add CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	// Handle preflight requests
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	log.Printf("Received provision request from %s", r.RemoteAddr)
 
 	var req ProvisionRequest
@@ -331,8 +342,19 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
-// TrackBareMetal handles the GET /api/v1/track_baremetal endpoint
+// TrackBareMetal handles the GET /api/v1/track-baremetal endpoint
 func (h *Handler) TrackBareMetal(w http.ResponseWriter, r *http.Request) {
+	// Add CORS headers
+	w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	// Handle preflight requests
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	log.Printf("Received request to track instance from %s", r.RemoteAddr)
 
 	instanceID := r.URL.Query().Get("instance_id")
