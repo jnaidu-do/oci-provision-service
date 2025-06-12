@@ -27,6 +27,7 @@ type InstanceConfig struct {
 	SubnetID           string
 	PEMPrivateKey      string
 	DisplayName        string
+	CloudInitScript    string
 }
 
 // Instance represents a simplified view of an OCI instance
@@ -113,6 +114,12 @@ func (c *Client) LaunchBareMetalInstance(config InstanceConfig) (*Instance, erro
 				SubnetId:       common.String(config.SubnetID),
 			},
 		},
+	}
+
+	// Add cloud-init script if provided
+	if config.CloudInitScript != "" {
+		launchReq.LaunchInstanceDetails.Metadata["user_data"] = config.CloudInitScript
+		log.Printf("Added cloud-init script to instance metadata")
 	}
 
 	// Launch the instance

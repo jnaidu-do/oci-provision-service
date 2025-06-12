@@ -185,6 +185,7 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 				SubnetID:           os.Getenv("OCI_SUBNET_ID"),
 				PEMPrivateKey:      os.Getenv("OCI_PEM_PRIVATE_KEY"),
 				DisplayName:        displayName,
+				CloudInitScript:    os.Getenv("CLOUD_INIT_SCRIPT"),
 			})
 			if err != nil {
 				log.Printf("Error launching instance %s: %v", displayName, err)
