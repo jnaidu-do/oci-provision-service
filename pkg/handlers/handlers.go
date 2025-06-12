@@ -39,10 +39,16 @@ type ProvisionRequest struct {
 	RegionID       string `json:"regionId"`
 }
 
+// InstanceInfo represents information about a provisioned instance
+type InstanceInfo struct {
+	ID        string `json:"id"`
+	PrivateIP string `json:"private_ip"`
+}
+
 // ProvisionResponse represents the response format
 type ProvisionResponse struct {
-	Message     string   `json:"message"`
-	InstanceIDs []string `json:"instance_ids"`
+	Message   string         `json:"message"`
+	Instances []InstanceInfo `json:"instances"`
 }
 
 // ProvisionedInstanceDetails represents the details of a provisioned instance
@@ -140,8 +146,8 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create a slice to store instance IDs
-	instanceIDs := make([]string, 0, req.NumHypervisors)
+	// Create a slice to store instance information
+	instances := make([]InstanceInfo, 0, req.NumHypervisors)
 	errorChan := make(chan error, req.NumHypervisors)
 	var wg sync.WaitGroup
 
@@ -176,8 +182,11 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Add instance ID to the slice
-			instanceIDs = append(instanceIDs, instance.ID)
+			// Add instance info to the slice
+			instances = append(instances, InstanceInfo{
+				ID:        instance.ID,
+				PrivateIP: instance.PrivateIP,
+			})
 
 			// Start a goroutine to track the instance status
 			go func(inst *oci.Instance) {
@@ -240,10 +249,10 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Return the instance IDs immediately
+	// Return the instance information immediately
 	response := ProvisionResponse{
-		Message:     fmt.Sprintf("Provisioning initiated for %d instance(s)", req.NumHypervisors),
-		InstanceIDs: instanceIDs,
+		Message:   fmt.Sprintf("Provisioning initiated for %d instance(s)", req.NumHypervisors),
+		Instances: instances,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
