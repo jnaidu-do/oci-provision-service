@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/hex"
@@ -12,7 +11,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
@@ -44,6 +42,8 @@ type ProvisionRequest struct {
 type ProvisionResponse struct {
 	Status               string `json:"status"`
 	InstanceTasksStarted int    `json:"instance_tasks_started"`
+	Message              string `json:"message"`
+	InstanceID           string `json:"instance_id"`
 }
 
 // ProvisionedInstanceDetails represents the details of a provisioned instance
@@ -125,137 +125,102 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate required fields
-	if req.CloudProvider == "" || req.Operation == "" || req.Region == "" || req.RegionID == "" {
-		log.Printf("Missing required fields in request")
-		http.Error(w, "Missing required fields", http.StatusBadRequest)
+	// Validate request
+	if req.CloudProvider != "oci" {
+		http.Error(w, "Only OCI cloud provider is supported", http.StatusBadRequest)
+		return
+	}
+
+	if req.Operation != "provision" {
+		http.Error(w, "Only provision operation is supported", http.StatusBadRequest)
 		return
 	}
 
 	if req.NumHypervisors <= 0 {
-		log.Printf("Invalid num_hypervisors value: %d", req.NumHypervisors)
-		http.Error(w, "num_hypervisors must be greater than 0", http.StatusBadRequest)
+		http.Error(w, "Number of hypervisors must be greater than 0", http.StatusBadRequest)
 		return
 	}
 
-	// Get OCI configuration from environment
-	config := oci.InstanceConfig{
+	// Generate a unique display name for each instance
+	randomSuffix, err := generateRandomSuffix()
+	if err != nil {
+		log.Printf("Error generating random suffix: %v", err)
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	displayName := fmt.Sprintf("baremetal-instance-%d-%s", 1, randomSuffix)
+	log.Printf("Generated display name: %s", displayName)
+
+	// Launch the instance
+	instance, err := h.ociClient.LaunchBareMetalInstance(oci.InstanceConfig{
 		CompartmentID:      os.Getenv("OCI_COMPARTMENT_ID"),
 		AvailabilityDomain: os.Getenv("OCI_AVAILABILITY_DOMAIN"),
 		ImageID:            os.Getenv("OCI_IMAGE_ID"),
 		SubnetID:           os.Getenv("OCI_SUBNET_ID"),
 		PEMPrivateKey:      os.Getenv("OCI_PEM_PRIVATE_KEY"),
-	}
-
-	// Validate OCI configuration
-	if config.CompartmentID == "" || config.AvailabilityDomain == "" ||
-		config.ImageID == "" || config.SubnetID == "" || config.PEMPrivateKey == "" {
-		log.Printf("Missing OCI configuration")
-		http.Error(w, "Server configuration error", http.StatusInternalServerError)
+		DisplayName:        displayName,
+	})
+	if err != nil {
+		log.Printf("Error launching instance %s: %v", displayName, err)
+		http.Error(w, fmt.Sprintf("Error during batch provisioning: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// Create a wait group to track all provisioning tasks
-	var wg sync.WaitGroup
-	errorChan := make(chan error, req.NumHypervisors)
+	// Start a goroutine to track the instance status
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
 
-	// Launch instances concurrently
-	for i := 0; i < req.NumHypervisors; i++ {
-		wg.Add(1)
-		go func(instanceNum int) {
-			defer wg.Done()
+		// Set a timeout of 10 minutes
+		timeout := time.After(10 * time.Minute)
+		startTime := time.Now()
 
-			// Generate random suffix
-			randomSuffix, err := generateRandomSuffix()
-			if err != nil {
-				log.Printf("Error generating random suffix: %v", err)
-				errorChan <- err
+		for {
+			select {
+			case <-timeout:
+				log.Printf("Timeout reached for instance %s after %v. Current state: %s",
+					instance.ID, time.Since(startTime), instance.LifecycleState)
 				return
+			case <-ticker.C:
+				// Get instance status
+				instance, err := h.ociClient.GetInstance(instance.ID)
+				if err != nil {
+					log.Printf("Error getting instance status: %v", err)
+					continue
+				}
+
+				// Log instance details
+				log.Printf("Instance %s status: %s", instance.DisplayName, instance.LifecycleState)
+
+				// Check for terminal states
+				switch instance.LifecycleState {
+				case "RUNNING":
+					log.Printf("Baremetal instance %s is now running with private IP %s",
+						instance.DisplayName, instance.PrivateIP)
+					return
+				case "TERMINATED", "TERMINATING":
+					log.Printf("Baremetal instance %s was terminated", instance.DisplayName)
+					return
+				case "STOPPED", "STOPPING":
+					log.Printf("Baremetal instance %s was stopped", instance.DisplayName)
+					return
+				case "FAULTED":
+					log.Printf("Baremetal instance %s encountered a fault", instance.DisplayName)
+					return
+				}
 			}
-
-			// Generate unique display name with random suffix
-			config.DisplayName = fmt.Sprintf("baremetal-instance-%d-%s", instanceNum+1, randomSuffix)
-			log.Printf("Generated display name: %s", config.DisplayName)
-
-			// Launch instance
-			instance, err := h.ociClient.LaunchBareMetalInstance(config)
-			if err != nil {
-				log.Printf("Error launching instance %s: %v", config.DisplayName, err)
-				errorChan <- err
-				return
-			}
-
-			// Start background polling
-			go h.pollInstanceStatus(r.Context(), instance.ID, req, config.DisplayName)
-		}(i)
-	}
-
-	// Wait for all launch operations to complete
-	wg.Wait()
-	close(errorChan)
-
-	// Check if any errors occurred
-	for err := range errorChan {
-		if err != nil {
-			log.Printf("Error during batch provisioning: %v", err)
-			http.Error(w, "Failed to provision instances", http.StatusInternalServerError)
-			return
 		}
-	}
+	}()
 
-	// Send success response
+	// Return the instance ID immediately
 	response := ProvisionResponse{
-		Status:               fmt.Sprintf("Initiated provisioning for %d bare metal instance(s)", req.NumHypervisors),
-		InstanceTasksStarted: req.NumHypervisors,
+		Message:    "Provisioning initiated",
+		InstanceID: instance.ID,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	json.NewEncoder(w).Encode(response)
-}
-
-// pollInstanceStatus polls the instance status and logs when running
-func (h *Handler) pollInstanceStatus(ctx context.Context, instanceID string, req ProvisionRequest, displayName string) {
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("Context cancelled for instance %s", instanceID)
-			return
-		case <-ticker.C:
-			instance, err := h.ociClient.GetInstance(instanceID)
-			if err != nil {
-				log.Printf("Error getting instance %s status: %v", instanceID, err)
-				continue
-			}
-
-			if instance.LifecycleState == "RUNNING" {
-				// Create event
-				event := ProvisioningEvent{
-					CloudProvider:  req.CloudProvider,
-					Operation:      req.Operation,
-					Region:         req.Region,
-					NumHypervisors: req.NumHypervisors,
-					RegionID:       req.RegionID,
-					ProvisionedInstanceDetails: ProvisionedInstanceDetails{
-						InstanceID:     instanceID,
-						PrivateIP:      instance.PrivateIP,
-						LifecycleState: instance.LifecycleState,
-						DisplayName:    displayName,
-					},
-				}
-
-				// Log the event
-				eventJSON, _ := json.Marshal(event)
-				log.Printf("Instance %s is now running: %s", instanceID, string(eventJSON))
-				return
-			}
-
-			log.Printf("Instance %s status: %s", instanceID, instance.LifecycleState)
-		}
-	}
 }
 
 // TrackBareMetal handles the GET /api/v1/track_baremetal endpoint
