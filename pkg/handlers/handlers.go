@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -23,20 +22,39 @@ import (
 // Handler represents the HTTP handlers for the API
 type Handler struct {
 	ociClient *oci.Client
-	kafkaProd *kafka.Producer
+	producer  *kafka.Producer
 }
 
 // NewHandler creates a new handler instance
 func NewHandler(ociClient *oci.Client) (*Handler, error) {
+	log.Printf("Creating new handler instance")
+
 	// Initialize Kafka producer
-	producer, err := kafka.NewProducer("10.40.185.73:9092", "filteredEvents")
+	log.Printf("Initializing Kafka producer")
+	brokerAddr := os.Getenv("KAFKA_BROKER_ADDR")
+	if brokerAddr == "" {
+		log.Printf("Warning: KAFKA_BROKER_ADDR not set, Kafka functionality will be disabled")
+		return &Handler{
+			ociClient: ociClient,
+		}, nil
+	}
+
+	topic := os.Getenv("KAFKA_TOPIC")
+	if topic == "" {
+		topic = "filteredEvents" // default topic
+	}
+
+	log.Printf("Creating Kafka producer with broker: %s and topic: %s", brokerAddr, topic)
+	producer, err := kafka.NewProducer(brokerAddr, topic)
 	if err != nil {
+		log.Printf("Failed to create Kafka producer: %v", err)
 		return nil, fmt.Errorf("failed to create Kafka producer: %v", err)
 	}
+	log.Printf("Kafka producer initialized successfully")
 
 	return &Handler{
 		ociClient: ociClient,
-		kafkaProd: producer,
+		producer:  producer,
 	}, nil
 }
 
@@ -232,18 +250,15 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 								instance.DisplayName, instance.PrivateIP)
 
 							// Send Kafka message
-							regionID, _ := strconv.Atoi(req.RegionID)
 							msg := kafka.EventMessage{
-								HostIP:         instance.PrivateIP,
-								Region:         req.Region,
-								NumHypervisors: strconv.Itoa(req.NumHypervisors),
-								RegionID:       regionID,
-								Token:          req.Token,
-								CloudProvider:  "oracle",
-								Operation:      "setup_hypervisor",
+								InstanceID:  instance.ID,
+								PrivateIP:   instance.PrivateIP,
+								DisplayName: instance.DisplayName,
+								Token:       req.Token,
+								Timestamp:   time.Now(),
 							}
 
-							if err := h.kafkaProd.SendEvent(msg); err != nil {
+							if err := h.producer.SendEvent(msg); err != nil {
 								log.Printf("Error sending Kafka message for instance %s: %v",
 									instance.DisplayName, err)
 							} else {
