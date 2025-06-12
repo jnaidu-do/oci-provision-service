@@ -11,6 +11,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jayanthnaidu/oci-provision-service/pkg/oci"
@@ -40,8 +41,8 @@ type ProvisionRequest struct {
 
 // ProvisionResponse represents the response format
 type ProvisionResponse struct {
-	Message    string `json:"message"`
-	InstanceID string `json:"instance_id"`
+	Message     string   `json:"message"`
+	InstanceIDs []string `json:"instance_ids"`
 }
 
 // ProvisionedInstanceDetails represents the details of a provisioned instance
@@ -139,81 +140,110 @@ func (h *Handler) ProvisionBareMetal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a unique display name for each instance
-	randomSuffix, err := generateRandomSuffix()
-	if err != nil {
-		log.Printf("Error generating random suffix: %v", err)
-		http.Error(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	displayName := fmt.Sprintf("baremetal-instance-%d-%s", 1, randomSuffix)
-	log.Printf("Generated display name: %s", displayName)
+	// Create a slice to store instance IDs
+	instanceIDs := make([]string, 0, req.NumHypervisors)
+	errorChan := make(chan error, req.NumHypervisors)
+	var wg sync.WaitGroup
 
-	// Launch the instance
-	instance, err := h.ociClient.LaunchBareMetalInstance(oci.InstanceConfig{
-		CompartmentID:      os.Getenv("OCI_COMPARTMENT_ID"),
-		AvailabilityDomain: os.Getenv("OCI_AVAILABILITY_DOMAIN"),
-		ImageID:            os.Getenv("OCI_IMAGE_ID"),
-		SubnetID:           os.Getenv("OCI_SUBNET_ID"),
-		PEMPrivateKey:      os.Getenv("OCI_PEM_PRIVATE_KEY"),
-		DisplayName:        displayName,
-	})
-	if err != nil {
-		log.Printf("Error launching instance %s: %v", displayName, err)
-		http.Error(w, fmt.Sprintf("Error during batch provisioning: %v", err), http.StatusInternalServerError)
-		return
-	}
+	// Launch instances concurrently
+	for i := 0; i < req.NumHypervisors; i++ {
+		wg.Add(1)
+		go func(instanceNum int) {
+			defer wg.Done()
 
-	// Start a goroutine to track the instance status
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-
-		// Set a timeout of 10 minutes
-		timeout := time.After(10 * time.Minute)
-		startTime := time.Now()
-
-		for {
-			select {
-			case <-timeout:
-				log.Printf("Timeout reached for instance %s after %v. Current state: %s",
-					instance.ID, time.Since(startTime), instance.LifecycleState)
+			// Generate a unique display name for each instance
+			randomSuffix, err := generateRandomSuffix()
+			if err != nil {
+				log.Printf("Error generating random suffix: %v", err)
+				errorChan <- err
 				return
-			case <-ticker.C:
-				// Get instance status
-				instance, err := h.ociClient.GetInstance(instance.ID)
-				if err != nil {
-					log.Printf("Error getting instance status: %v", err)
-					continue
-				}
-
-				// Log instance details
-				log.Printf("Instance %s status: %s", instance.DisplayName, instance.LifecycleState)
-
-				// Check for terminal states
-				switch instance.LifecycleState {
-				case "RUNNING":
-					log.Printf("Baremetal instance %s is now running with private IP %s",
-						instance.DisplayName, instance.PrivateIP)
-					return
-				case "TERMINATED", "TERMINATING":
-					log.Printf("Baremetal instance %s was terminated", instance.DisplayName)
-					return
-				case "STOPPED", "STOPPING":
-					log.Printf("Baremetal instance %s was stopped", instance.DisplayName)
-					return
-				case "FAULTED":
-					log.Printf("Baremetal instance %s encountered a fault", instance.DisplayName)
-					return
-				}
 			}
-		}
-	}()
+			displayName := fmt.Sprintf("baremetal-instance-%d-%s", instanceNum+1, randomSuffix)
+			log.Printf("Generated display name: %s", displayName)
 
-	// Return the instance ID immediately
+			// Launch the instance
+			instance, err := h.ociClient.LaunchBareMetalInstance(oci.InstanceConfig{
+				CompartmentID:      os.Getenv("OCI_COMPARTMENT_ID"),
+				AvailabilityDomain: os.Getenv("OCI_AVAILABILITY_DOMAIN"),
+				ImageID:            os.Getenv("OCI_IMAGE_ID"),
+				SubnetID:           os.Getenv("OCI_SUBNET_ID"),
+				PEMPrivateKey:      os.Getenv("OCI_PEM_PRIVATE_KEY"),
+				DisplayName:        displayName,
+			})
+			if err != nil {
+				log.Printf("Error launching instance %s: %v", displayName, err)
+				errorChan <- err
+				return
+			}
+
+			// Add instance ID to the slice
+			instanceIDs = append(instanceIDs, instance.ID)
+
+			// Start a goroutine to track the instance status
+			go func(inst *oci.Instance) {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+
+				// Set a timeout of 10 minutes
+				timeout := time.After(10 * time.Minute)
+				startTime := time.Now()
+
+				for {
+					select {
+					case <-timeout:
+						log.Printf("Timeout reached for instance %s after %v. Current state: %s",
+							inst.ID, time.Since(startTime), inst.LifecycleState)
+						return
+					case <-ticker.C:
+						// Get instance status
+						instance, err := h.ociClient.GetInstance(inst.ID)
+						if err != nil {
+							log.Printf("Error getting instance status: %v", err)
+							continue
+						}
+
+						// Log instance details
+						log.Printf("Instance %s status: %s", instance.DisplayName, instance.LifecycleState)
+
+						// Check for terminal states
+						switch instance.LifecycleState {
+						case "RUNNING":
+							log.Printf("Baremetal instance %s is now running with private IP %s",
+								instance.DisplayName, instance.PrivateIP)
+							return
+						case "TERMINATED", "TERMINATING":
+							log.Printf("Baremetal instance %s was terminated", instance.DisplayName)
+							return
+						case "STOPPED", "STOPPING":
+							log.Printf("Baremetal instance %s was stopped", instance.DisplayName)
+							return
+						case "FAULTED":
+							log.Printf("Baremetal instance %s encountered a fault", instance.DisplayName)
+							return
+						}
+					}
+				}
+			}(instance)
+		}(i)
+	}
+
+	// Wait for all launch operations to complete
+	wg.Wait()
+	close(errorChan)
+
+	// Check if any errors occurred
+	for err := range errorChan {
+		if err != nil {
+			log.Printf("Error during batch provisioning: %v", err)
+			http.Error(w, "Failed to provision instances", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Return the instance IDs immediately
 	response := ProvisionResponse{
-		Message:    "Provisioning initiated",
-		InstanceID: instance.ID,
+		Message:     fmt.Sprintf("Provisioning initiated for %d instance(s)", req.NumHypervisors),
+		InstanceIDs: instanceIDs,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
