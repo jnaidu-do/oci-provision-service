@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      - OCI_COMPARTMENT_ID=${OCI_COMPARTMENT_ID}
+      - OCI_AVAILABILITY_DOMAIN=${OCI_AVAILABILITY_DOMAIN}
+      - OCI_IMAGE_ID=${OCI_IMAGE_ID}
+      - OCI_SUBNET_ID=${OCI_SUBNET_ID}
+      - OCI_PEM_PRIVATE_KEY=${OCI_PEM_PRIVATE_KEY}
+      - CLOUD_INIT_SCRIPT=${CLOUD_INIT_SCRIPT}
+      - OCI_LOCAL_DEV=${OCI_LOCAL_DEV:-false}
+    restart: unless-stopped 
